@@ -23,7 +23,6 @@ import {
   DialogTitle,
   Divider,
   Grid,
-  List,
   Paper,
   useTheme,
 } from '@material-ui/core';
@@ -31,7 +30,6 @@ import Typography from '@material-ui/core/Typography';
 import LaunchIcon from '@material-ui/icons/Launch';
 import { makeStyles } from '@material-ui/core/styles';
 import {
-  DefaultResultListItem,
   SearchContextProvider,
   SearchBar,
   SearchResult,
@@ -40,7 +38,7 @@ import {
 } from '@backstage/plugin-search-react';
 import { useRouteRef } from '@backstage/core-plugin-api';
 import { Link, useContent } from '@backstage/core-components';
-import { rootRouteRef } from '../../plugin';
+import { rootRouteRef, DefaultSearchResultListItem } from '../../plugin';
 
 /**
  * @public
@@ -151,26 +149,11 @@ export const Modal = ({ toggleModal }: SearchModalProps) => {
           </Grid>
         </Grid>
         <Divider />
-        <SearchResult>
-          {({ results }) => (
-            <List>
-              {results.map(({ document, highlight }) => (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  key={`${document.location}-btn`}
-                  onClick={handleSearchResultClick}
-                  onKeyDown={handleSearchResultClick}
-                >
-                  <DefaultResultListItem
-                    key={document.location}
-                    result={document}
-                    highlight={highlight}
-                  />
-                </div>
-              ))}
-            </List>
-          )}
+        <SearchResult
+          onClick={handleSearchResultClick}
+          onKeyDown={handleSearchResultClick}
+        >
+          <DefaultSearchResultListItem />
         </SearchResult>
       </DialogContent>
       <DialogActions className={classes.dialogActionsContainer}>
