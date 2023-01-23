@@ -15,7 +15,12 @@
  */
 
 import { SearchClient } from './apis';
-import { searchApiRef } from '@backstage/plugin-search-react';
+import {
+  searchApiRef,
+  createSearchResultListItemExtension,
+  DefaultResultListItem as DefaultSearchResultListItemExtension,
+  DefaultResultListItemProps as DefaultSearchResultListItemExtensionProps,
+} from '@backstage/plugin-search-react';
 import {
   createApiFactory,
   createPlugin,
@@ -86,4 +91,16 @@ export const HomePageSearchBar = searchPlugin.provide(
         import('./components/HomePageComponent').then(m => m.HomePageSearchBar),
     },
   }),
+);
+
+/**
+ * @public
+ */
+export const DefaultSearchResultListItem = searchPlugin.provide(
+  createSearchResultListItemExtension<DefaultSearchResultListItemExtensionProps>(
+    {
+      name: 'DefaultSearchResultListItemExtension',
+      component: DefaultSearchResultListItemExtension,
+    },
+  ),
 );

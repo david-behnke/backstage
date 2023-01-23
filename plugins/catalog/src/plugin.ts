@@ -31,6 +31,7 @@ import {
   fetchApiRef,
   storageApiRef,
 } from '@backstage/core-plugin-api';
+import { createSearchResultListItemExtension } from '@backstage/plugin-search-react';
 import { DefaultStarredEntitiesApi } from './apis';
 import { AboutCardProps } from './components/AboutCard';
 import { DefaultCatalogPageProps } from './components/CatalogPage';
@@ -42,6 +43,10 @@ import { HasResourcesCardProps } from './components/HasResourcesCard';
 import { HasSubcomponentsCardProps } from './components/HasSubcomponentsCard';
 import { HasSystemsCardProps } from './components/HasSystemsCard';
 import { RelatedEntitiesCardProps } from './components/RelatedEntitiesCard';
+import {
+  CatalogSearchResultListItem as CatalogSearchResultListItemExtension,
+  CatalogSearchResultListItemProps as CatalogSearchResultListItemExtensionProps,
+} from './components/CatalogSearchResultListItem';
 import { rootRouteRef } from './routes';
 import { CatalogInputPluginOptions, CatalogPluginOptions } from './options';
 
@@ -248,4 +253,15 @@ export const RelatedEntitiesCard: <T extends Entity>(
         ),
     },
   }),
+);
+
+/** @public */
+export const CatalogSearchResultListItem = catalogPlugin.provide(
+  createSearchResultListItemExtension<CatalogSearchResultListItemExtensionProps>(
+    {
+      name: 'CatalogSearchResultListItemExtension',
+      component: CatalogSearchResultListItemExtension,
+      predicate: result => result.type === 'software-catalog',
+    },
+  ),
 );

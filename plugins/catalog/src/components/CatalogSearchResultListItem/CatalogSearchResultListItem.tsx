@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { ReactNode } from 'react';
+import React, { ReactNode, useCallback } from 'react';
 import {
   Box,
   Chip,
@@ -50,9 +50,10 @@ const useStyles = makeStyles({
  */
 export interface CatalogSearchResultListItemProps {
   icon?: ReactNode;
-  result: IndexableDocument;
+  result?: IndexableDocument;
   highlight?: ResultHighlight;
   rank?: number;
+  noTrack?: boolean;
 }
 
 /** @public */
@@ -64,12 +65,17 @@ export function CatalogSearchResultListItem(
 
   const classes = useStyles();
   const analytics = useAnalytics();
-  const handleClick = () => {
+
+  const handleClick = useCallback(() => {
+    if (props.noTrack) return;
+    if (!result) return;
     analytics.captureEvent('discover', result.title, {
       attributes: { to: result.location },
       value: props.rank,
     });
-  };
+  }, [props, result, analytics]);
+
+  if (!result) return null;
 
   return (
     <>

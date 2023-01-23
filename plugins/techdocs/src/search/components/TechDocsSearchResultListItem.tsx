@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { PropsWithChildren, ReactNode } from 'react';
+import React, { PropsWithChildren, ReactNode, useCallback } from 'react';
 import {
   Divider,
   ListItem,
@@ -45,13 +45,14 @@ const useStyles = makeStyles({
  */
 export type TechDocsSearchResultListItemProps = {
   icon?: ReactNode;
-  result: any;
+  result?: any;
   highlight?: ResultHighlight;
   rank?: number;
   lineClamp?: number;
   asListItem?: boolean;
   asLink?: boolean;
   title?: string;
+  noTrack?: boolean;
 };
 
 /**
@@ -71,16 +72,20 @@ export const TechDocsSearchResultListItem = (
     asLink = true,
     title,
     icon,
+    noTrack,
   } = props;
   const classes = useStyles();
 
   const analytics = useAnalytics();
-  const handleClick = () => {
+
+  const handleClick = useCallback(() => {
+    if (noTrack) return;
+    if (!result) return;
     analytics.captureEvent('discover', result.title, {
       attributes: { to: result.location },
       value: rank,
     });
-  };
+  }, [rank, result, analytics, noTrack]);
 
   const LinkWrapper = ({ children }: PropsWithChildren<{}>) =>
     asLink ? (
@@ -121,6 +126,8 @@ export const TechDocsSearchResultListItem = (
     ) : (
       result.name
     );
+
+    if (!result) return null;
 
     return (
       <ListItemText

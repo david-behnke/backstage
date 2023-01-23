@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, { ReactNode } from 'react';
+import React, { ReactNode, useCallback } from 'react';
 import { AnalyticsContext, useAnalytics } from '@backstage/core-plugin-api';
 import {
   ResultHighlight,
@@ -39,10 +39,11 @@ import { Link } from '@backstage/core-components';
 export type DefaultResultListItemProps = {
   icon?: ReactNode;
   secondaryAction?: ReactNode;
-  result: SearchDocument;
+  result?: SearchDocument;
   highlight?: ResultHighlight;
   rank?: number;
   lineClamp?: number;
+  noTrack?: boolean;
 };
 
 /**
@@ -57,14 +58,20 @@ export const DefaultResultListItemComponent = ({
   icon,
   secondaryAction,
   lineClamp = 5,
+  noTrack,
 }: DefaultResultListItemProps) => {
   const analytics = useAnalytics();
-  const handleClick = () => {
+
+  const handleClick = useCallback(() => {
+    if (noTrack) return;
+    if (!result) return;
     analytics.captureEvent('discover', result.title, {
       attributes: { to: result.location },
       value: rank,
     });
-  };
+  }, [rank, result, analytics, noTrack]);
+
+  if (!result) return null;
 
   return (
     <>
