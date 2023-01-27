@@ -21,7 +21,8 @@ import {
 } from '@backstage/catalog-model';
 import { InputError, NotFoundError } from '@backstage/errors';
 import { Knex } from 'knex';
-import lodash from 'lodash';
+import { get, countBy, identity, isEqual } from 'lodash';
+import { Logger } from 'winston';
 import {
   Cursor,
   EntitiesCatalog,
@@ -50,7 +51,7 @@ import {
 } from './util';
 
 const defaultSortField: EntitySortField = {
-  field: 'metadata.name',
+  field: 'metadata.uid',
   order: 'asc',
 };
 
@@ -177,7 +178,13 @@ function parseFilter(
 }
 
 export class DefaultEntitiesCatalog implements EntitiesCatalog {
-  constructor(private readonly database: Knex) {}
+  private readonly database: Knex;
+  private readonly logger: Logger;
+
+  constructor(options: { database: Knex; logger: Logger }) {
+    this.database = options.database;
+    this.logger = options.logger;
+  }
 
   async entities(request?: EntitiesRequest): Promise<EntitiesResponse> {
     const db = this.database;
@@ -257,8 +264,9 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
     const db = this.database;
     const limit = request?.limit ?? 20;
 
-    const cursor: Omit<Cursor, 'sortFieldIds'> & { sortFieldIds?: string[] } = {
-      firstFieldId: '',
+    const cursor: Omit<Cursor, 'sortFieldValues'> & {
+      sortFieldValues?: (string | null)[];
+    } = {
       sortFields: [defaultSortField],
       isPrevious: false,
       ...parseCursorFromRequest(request),
@@ -266,17 +274,20 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
 
     const isFetchingBackwards = cursor.isPrevious;
 
-    // TODO(vinzscam): at the moment only a single sortField is supported
+    if (cursor.sortFields.length > 1) {
+      this.logger.warn(`Only one sort field is supported, ignoring the rest`);
+    }
+
     const sortField: EntitySortField = {
       ...defaultSortField,
       ...cursor.sortFields[0],
     };
 
-    const sortFieldId = cursor.sortFieldIds?.[0];
+    const [prevItemSortFieldValue, prevItemUid] = cursor.sortFieldValues || [];
 
     const dbQuery = db('search')
       .join('final_entities', 'search.entity_id', 'final_entities.entity_id')
-      .where('key', sortField.field);
+      .where('search.key', sortField.field);
 
     if (cursor.filter) {
       parseFilter(cursor.filter, dbQuery, db, false, 'search.entity_id');
@@ -293,19 +304,37 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
     const countQuery = dbQuery.clone();
 
     const isOrderingDescending = sortField.order === 'desc';
-    if (sortFieldId) {
+
+    if (prevItemSortFieldValue) {
       dbQuery.andWhere(
         'value',
         isFetchingBackwards !== isOrderingDescending ? '<' : '>',
-        sortFieldId,
+        prevItemSortFieldValue,
       );
+      dbQuery.orWhere(function nested() {
+        this.where('value', '=', prevItemSortFieldValue).andWhere(
+          'search.entity_id',
+          isFetchingBackwards !== isOrderingDescending ? '<' : '>',
+          prevItemUid,
+        );
+      });
     }
 
     dbQuery
-      .orderBy(
-        'value',
-        isFetchingBackwards ? invertOrder(sortField.order) : sortField.order,
-      )
+      .orderBy([
+        {
+          column: 'value',
+          order: isFetchingBackwards
+            ? invertOrder(sortField.order)
+            : sortField.order,
+        },
+        {
+          column: 'search.entity_id',
+          order: isFetchingBackwards
+            ? invertOrder(sortField.order)
+            : sortField.order,
+        },
+      ])
       // fetch an extra item to check if there are more items.
       .limit(isFetchingBackwards ? limit : limit + 1);
 
@@ -335,15 +364,21 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
       rows.length -= 1;
     }
 
-    const isInitialRequest = cursor.firstFieldId === '';
+    const isInitialRequest = cursor.firstSortFieldValues === undefined;
 
-    const firstFieldId = cursor.firstFieldId || rows[0]?.value;
+    const firstRow = rows[0];
+    const lastRow = rows[rows.length - 1];
+
+    const firstSortFieldValues = cursor.firstSortFieldValues || [
+      firstRow?.value,
+      firstRow?.entity_id,
+    ];
 
     const nextCursor = hasMoreResults
       ? encodeCursor({
           ...cursor,
-          sortFieldIds: [rows[rows.length - 1].value],
-          firstFieldId,
+          sortFieldValues: sortFieldsFromRow(lastRow),
+          firstSortFieldValues,
           isPrevious: false,
           totalItems,
         })
@@ -352,11 +387,11 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
     const prevCursor =
       !isInitialRequest &&
       rows.length > 0 &&
-      rows[0].value !== cursor.firstFieldId
+      !isEqual(sortFieldsFromRow(firstRow), cursor.firstSortFieldValues)
         ? encodeCursor({
             ...cursor,
-            sortFieldIds: [rows[0].value],
-            firstFieldId: cursor.firstFieldId,
+            sortFieldValues: sortFieldsFromRow(firstRow),
+            firstSortFieldValues: cursor.firstSortFieldValues,
             isPrevious: true,
             totalItems,
           })
@@ -494,7 +529,7 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
               facet.substring('metadata.labels.'.length)
             ];
           }
-          return lodash.get(entity, facet);
+          return get(entity, facet);
         })
         .flatMap(field => {
           if (typeof field === 'string') {
@@ -506,7 +541,7 @@ export class DefaultEntitiesCatalog implements EntitiesCatalog {
         })
         .sort();
 
-      const counts = lodash.countBy(values, lodash.identity);
+      const counts = countBy(values, identity);
 
       facets[facet] = Object.entries(counts).map(([value, count]) => ({
         value,
@@ -545,4 +580,8 @@ function parseCursorFromRequest(
 
 function invertOrder(order: EntitySortField['order']) {
   return order === 'asc' ? 'desc' : 'asc';
+}
+
+function sortFieldsFromRow(row: DbSearchRow) {
+  return [row.value, row.entity_id];
 }

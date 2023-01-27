@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { getVoidLogger } from '@backstage/backend-common';
 import { TestDatabaseId, TestDatabases } from '@backstage/backend-test-utils';
 import { Entity, stringifyEntityRef } from '@backstage/catalog-model';
 import { Knex } from 'knex';
@@ -32,18 +33,22 @@ import {
 import { DefaultEntitiesCatalog } from './DefaultEntitiesCatalog';
 
 describe('DefaultEntitiesCatalog', () => {
+  let knex: Knex;
+
+  afterEach(async () => {
+    await knex.destroy();
+  });
+
   const databases = TestDatabases.create({
     ids: ['POSTGRES_13', 'POSTGRES_9', 'SQLITE_3'],
   });
 
   async function createDatabase(databaseId: TestDatabaseId) {
-    const knex = await databases.init(databaseId);
+    knex = await databases.init(databaseId);
     await applyDatabaseMigrations(knex);
-    return { knex };
   }
 
   async function addEntity(
-    knex: Knex,
     entity: Entity,
     parents: { source?: string; entity?: Entity }[],
   ) {
@@ -80,8 +85,7 @@ describe('DefaultEntitiesCatalog', () => {
     return id;
   }
 
-  async function addEntityToSearch(knex: Knex, entity: Entity) {
-    const id = uuid();
+  async function addEntityToSearch(entity: Entity, id = uuid()) {
     const entityRef = stringifyEntityRef(entity);
     const entityJson = JSON.stringify(entity);
 
@@ -101,11 +105,13 @@ describe('DefaultEntitiesCatalog', () => {
       stitch_ticket: '',
     });
 
-    await insertSearchRow(knex, id, null, entity);
+    await insertSearchRow(id, null, {
+      ...entity,
+      metadata: { ...entity.metadata, uid: id },
+    });
   }
 
   async function insertSearchRow(
-    knex: Knex,
     id: string,
     previousKey: string | null,
     previousValue: Object,
@@ -114,7 +120,7 @@ describe('DefaultEntitiesCatalog', () => {
       Object.entries(previousValue).map(async ([key, value]) => {
         const currentKey = `${previousKey ? `${previousKey}.` : ``}${key}`;
         if (typeof value === 'object') {
-          await insertSearchRow(knex, id, currentKey, value);
+          await insertSearchRow(id, currentKey, value);
         } else {
           await knex<DbSearchRow>('search').insert({
             entity_id: id,
@@ -130,7 +136,7 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return the ancestry with one parent, %p',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
         const grandparent: Entity = {
           apiVersion: 'a',
@@ -151,11 +157,14 @@ describe('DefaultEntitiesCatalog', () => {
           spec: {},
         };
 
-        await addEntity(knex, grandparent, [{ source: 's' }]);
-        await addEntity(knex, parent, [{ entity: grandparent }]);
-        await addEntity(knex, root, [{ entity: parent }]);
+        await addEntity(grandparent, [{ source: 's' }]);
+        await addEntity(parent, [{ entity: grandparent }]);
+        await addEntity(root, [{ entity: parent }]);
 
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
         const result = await catalog.entityAncestry('k:default/root');
         expect(result.rootEntityRef).toEqual('k:default/root');
 
@@ -184,8 +193,11 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should throw error if the entity does not exist, %p',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
-        const catalog = new DefaultEntitiesCatalog(knex);
+        await createDatabase(databaseId);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
         await expect(() =>
           catalog.entityAncestry('k:default/root'),
         ).rejects.toThrow('No such entity k:default/root');
@@ -196,7 +208,7 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return the ancestry with multiple parents, %p',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
         const grandparent: Entity = {
           apiVersion: 'a',
@@ -223,12 +235,15 @@ describe('DefaultEntitiesCatalog', () => {
           spec: {},
         };
 
-        await addEntity(knex, grandparent, [{ source: 's' }]);
-        await addEntity(knex, parent1, [{ entity: grandparent }]);
-        await addEntity(knex, parent2, [{ entity: grandparent }]);
-        await addEntity(knex, root, [{ entity: parent1 }, { entity: parent2 }]);
+        await addEntity(grandparent, [{ source: 's' }]);
+        await addEntity(parent1, [{ entity: grandparent }]);
+        await addEntity(parent2, [{ entity: grandparent }]);
+        await addEntity(root, [{ entity: parent1 }, { entity: parent2 }]);
 
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
         const result = await catalog.entityAncestry('k:default/root');
         expect(result.rootEntityRef).toEqual('k:default/root');
 
@@ -267,7 +282,7 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return correct entity for simple filter',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
         const entity1: Entity = {
           apiVersion: 'a',
           kind: 'k',
@@ -282,9 +297,12 @@ describe('DefaultEntitiesCatalog', () => {
             test: 'test value',
           },
         };
-        await addEntityToSearch(knex, entity1);
-        await addEntityToSearch(knex, entity2);
-        const catalog = new DefaultEntitiesCatalog(knex);
+        await addEntityToSearch(entity1);
+        await addEntityToSearch(entity2);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const testFilter = {
           key: 'spec.test',
@@ -300,7 +318,7 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return correct entity for negation filter',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
         const entity1: Entity = {
           apiVersion: 'a',
           kind: 'k',
@@ -315,9 +333,12 @@ describe('DefaultEntitiesCatalog', () => {
             test: 'test value',
           },
         };
-        await addEntityToSearch(knex, entity1);
-        await addEntityToSearch(knex, entity2);
-        const catalog = new DefaultEntitiesCatalog(knex);
+        await addEntityToSearch(entity1);
+        await addEntityToSearch(entity2);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const testFilter = {
           not: {
@@ -335,7 +356,7 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return correct entities for nested filter',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
         const entity1: Entity = {
           apiVersion: 'a',
           kind: 'k',
@@ -360,11 +381,14 @@ describe('DefaultEntitiesCatalog', () => {
           metadata: { name: 'four', org: 'b', color: 'blue' },
           spec: {},
         };
-        await addEntityToSearch(knex, entity1);
-        await addEntityToSearch(knex, entity2);
-        await addEntityToSearch(knex, entity3);
-        await addEntityToSearch(knex, entity4);
-        const catalog = new DefaultEntitiesCatalog(knex);
+        await addEntityToSearch(entity1);
+        await addEntityToSearch(entity2);
+        await addEntityToSearch(entity3);
+        await addEntityToSearch(entity4);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const testFilter1 = {
           key: 'metadata.org',
@@ -404,7 +428,7 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return correct entities for complex negation filter',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
         const entity1: Entity = {
           apiVersion: 'a',
           kind: 'k',
@@ -417,9 +441,12 @@ describe('DefaultEntitiesCatalog', () => {
           metadata: { name: 'two', org: 'b', desc: 'description' },
           spec: {},
         };
-        await addEntityToSearch(knex, entity1);
-        await addEntityToSearch(knex, entity2);
-        const catalog = new DefaultEntitiesCatalog(knex);
+        await addEntityToSearch(entity1);
+        await addEntityToSearch(entity2);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const testFilter1 = {
           key: 'metadata.org',
@@ -446,7 +473,7 @@ describe('DefaultEntitiesCatalog', () => {
       'should return no matches for an empty values array',
       // NOTE: An empty values array is not a sensible input in a realistic scenario.
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
         const entity1: Entity = {
           apiVersion: 'a',
           kind: 'k',
@@ -459,9 +486,12 @@ describe('DefaultEntitiesCatalog', () => {
           metadata: { name: 'two' },
           spec: {},
         };
-        await addEntityToSearch(knex, entity1);
-        await addEntityToSearch(knex, entity2);
-        const catalog = new DefaultEntitiesCatalog(knex);
+        await addEntityToSearch(entity1);
+        await addEntityToSearch(entity2);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const testFilter = {
           key: 'kind',
@@ -477,9 +507,8 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return both target and targetRef for entities',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
         await addEntity(
-          knex,
           {
             apiVersion: 'a',
             kind: 'k',
@@ -490,7 +519,6 @@ describe('DefaultEntitiesCatalog', () => {
           [],
         );
         await addEntity(
-          knex,
           {
             apiVersion: 'a',
             kind: 'k',
@@ -505,7 +533,10 @@ describe('DefaultEntitiesCatalog', () => {
           },
           [],
         );
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const { entities } = await catalog.entities();
 
@@ -535,7 +566,7 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should return paginated entities and scroll the items accordingly, %p',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
         function entityFrom(name: string) {
           return {
@@ -565,12 +596,13 @@ describe('DefaultEntitiesCatalog', () => {
         ];
 
         await Promise.all(
-          entities
-            .concat(notFoundEntities)
-            .map(e => addEntityToSearch(knex, e)),
+          entities.concat(notFoundEntities).map(e => addEntityToSearch(e)),
         );
 
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const filter = {
           key: 'spec.should_include_this',
@@ -599,7 +631,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response2.entities).toEqual([entityFrom('C'), entityFrom('D')]);
         expect(response2.nextCursor).toBeDefined();
         expect(response2.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response2.totalItems).toBe(names.length);
 
         // third request (forward)
         const request3: PaginatedEntitiesCursorRequest = {
@@ -610,7 +642,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response3.entities).toEqual([entityFrom('E'), entityFrom('F')]);
         expect(response3.nextCursor).toBeDefined();
         expect(response3.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response3.totalItems).toBe(names.length);
 
         // fourth request (backwards)
         const request4: PaginatedEntitiesCursorRequest = {
@@ -621,7 +653,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response4.entities).toEqual([entityFrom('C'), entityFrom('D')]);
         expect(response4.nextCursor).toBeDefined();
         expect(response4.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response4.totalItems).toBe(names.length);
 
         // fifth request (backwards)
         const request5: PaginatedEntitiesCursorRequest = {
@@ -632,7 +664,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response5.entities).toEqual([entityFrom('A'), entityFrom('B')]);
         expect(response5.nextCursor).toBeDefined();
         expect(response5.prevCursor).toBeUndefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response5.totalItems).toBe(names.length);
 
         // sixth request (forward)
         const request6: PaginatedEntitiesCursorRequest = {
@@ -643,7 +675,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response6.entities).toEqual([entityFrom('C'), entityFrom('D')]);
         expect(response6.nextCursor).toBeDefined();
         expect(response6.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response6.totalItems).toBe(names.length);
 
         // seventh request (forward)
         const request7: PaginatedEntitiesCursorRequest = {
@@ -654,7 +686,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response7.entities).toEqual([entityFrom('E'), entityFrom('F')]);
         expect(response7.nextCursor).toBeDefined();
         expect(response7.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response7.totalItems).toBe(names.length);
 
         // seventh.2 request (forward with a different limit)
         const request7bis: PaginatedEntitiesCursorRequest = {
@@ -669,7 +701,7 @@ describe('DefaultEntitiesCatalog', () => {
         ]);
         expect(response7bis.nextCursor).toBeUndefined();
         expect(response7bis.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response7bis.totalItems).toBe(names.length);
 
         // last request (forward)
         const request8: PaginatedEntitiesCursorRequest = {
@@ -680,14 +712,14 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response8.entities).toEqual([entityFrom('G')]);
         expect(response8.nextCursor).toBeUndefined();
         expect(response8.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response8.totalItems).toBe(names.length);
       },
     );
 
     it.each(databases.eachSupportedId())(
       'should return paginated entities ordered in descending order and scroll the items accordingly, %p',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
         function entityFrom(name: string) {
           return {
@@ -717,12 +749,13 @@ describe('DefaultEntitiesCatalog', () => {
         ];
 
         await Promise.all(
-          entities
-            .concat(notFoundEntities)
-            .map(e => addEntityToSearch(knex, e)),
+          entities.concat(notFoundEntities).map(e => addEntityToSearch(e)),
         );
 
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const filter = {
           key: 'spec.should_include_this',
@@ -751,7 +784,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response2.entities).toEqual([entityFrom('E'), entityFrom('D')]);
         expect(response2.nextCursor).toBeDefined();
         expect(response2.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response2.totalItems).toBe(names.length);
 
         // third request (forward)
         const request3: PaginatedEntitiesCursorRequest = {
@@ -762,7 +795,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response3.entities).toEqual([entityFrom('C'), entityFrom('B')]);
         expect(response3.nextCursor).toBeDefined();
         expect(response3.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response3.totalItems).toBe(names.length);
 
         // fourth request (backwards)
         const request4: PaginatedEntitiesCursorRequest = {
@@ -774,7 +807,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response4.entities).toEqual([entityFrom('E'), entityFrom('D')]);
         expect(response4.nextCursor).toBeDefined();
         expect(response4.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response4.totalItems).toBe(names.length);
 
         // fifth request (backwards)
         const request5: PaginatedEntitiesCursorRequest = {
@@ -785,7 +818,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response5.entities).toEqual([entityFrom('G'), entityFrom('F')]);
         expect(response5.nextCursor).toBeDefined();
         expect(response5.prevCursor).toBeUndefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response5.totalItems).toBe(names.length);
 
         // sixth request (forward)
         const request6: PaginatedEntitiesCursorRequest = {
@@ -796,7 +829,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response6.entities).toEqual([entityFrom('E'), entityFrom('D')]);
         expect(response6.nextCursor).toBeDefined();
         expect(response6.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response6.totalItems).toBe(names.length);
 
         // seventh request (forward)
         const request7: PaginatedEntitiesCursorRequest = {
@@ -807,7 +840,7 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response7.entities).toEqual([entityFrom('C'), entityFrom('B')]);
         expect(response7.nextCursor).toBeDefined();
         expect(response7.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response7.totalItems).toBe(names.length);
 
         // seventh.2 request (forward with a different limit)
         const request7bis: PaginatedEntitiesCursorRequest = {
@@ -822,7 +855,7 @@ describe('DefaultEntitiesCatalog', () => {
         ]);
         expect(response7bis.nextCursor).toBeUndefined();
         expect(response7bis.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response7bis.totalItems).toBe(names.length);
 
         // last request (forward)
         const request8: PaginatedEntitiesCursorRequest = {
@@ -833,14 +866,14 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response8.entities).toEqual([entityFrom('A')]);
         expect(response8.nextCursor).toBeUndefined();
         expect(response8.prevCursor).toBeDefined();
-        expect(response1.totalItems).toBe(names.length);
+        expect(response8.totalItems).toBe(names.length);
       },
     );
 
     it.each(databases.eachSupportedId())(
       'should filter the results when query is provided, %p',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
         function entityFrom(name: string) {
           return {
@@ -870,12 +903,13 @@ describe('DefaultEntitiesCatalog', () => {
         ];
 
         await Promise.all(
-          entities
-            .concat(notFoundEntities)
-            .map(e => addEntityToSearch(knex, e)),
+          entities.concat(notFoundEntities).map(e => addEntityToSearch(e)),
         );
 
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const filter = {
           key: 'spec.should_include_this',
@@ -903,13 +937,13 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'should include totalItems and empty entities in the response in case limit is zero, %p',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
         await Promise.all(
           Array(20)
             .fill(0)
             .map(() =>
-              addEntityToSearch(knex, {
+              addEntityToSearch({
                 apiVersion: 'a',
                 kind: 'k',
                 metadata: { name: v4() },
@@ -917,7 +951,10 @@ describe('DefaultEntitiesCatalog', () => {
             ),
         );
 
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         const request: PaginatedEntitiesInitialRequest = {
           limit: 0,
@@ -926,13 +963,216 @@ describe('DefaultEntitiesCatalog', () => {
         expect(response).toEqual({ totalItems: 20, entities: [] });
       },
     );
+
+    it.each(databases.eachSupportedId())(
+      'should paginate results accordingly in case of clashing items, %p',
+      async databaseId => {
+        await createDatabase(databaseId);
+
+        function entityFrom(name: string, namespace?: string) {
+          return {
+            apiVersion: 'a',
+            kind: 'k',
+            metadata: { name, ...(!!namespace && { namespace }) },
+            spec: { should_include_this: 'yes' },
+          };
+        }
+
+        await Promise.all([
+          addEntityToSearch(entityFrom('AA')),
+          addEntityToSearch(entityFrom('AA', 'namespace2')),
+          addEntityToSearch(entityFrom('AA', 'namespace3')),
+          addEntityToSearch(entityFrom('AA', 'namespace4')),
+          addEntityToSearch(entityFrom('CC')),
+          addEntityToSearch(entityFrom('DD')),
+        ]);
+
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
+
+        const limit = 2;
+
+        // initial request
+        const request1: PaginatedEntitiesInitialRequest = {
+          limit,
+          sortFields: [{ field: 'metadata.name' }],
+        };
+        const response1 = await catalog.paginatedEntities(request1);
+        expect(response1.entities).toMatchObject([
+          entityFrom('AA'),
+          entityFrom('AA'),
+        ]);
+        expect(response1.nextCursor).toBeDefined();
+        expect(response1.prevCursor).toBeUndefined();
+        expect(response1.totalItems).toBe(6);
+
+        // second request (forward)
+        const request2: PaginatedEntitiesCursorRequest = {
+          cursor: response1.nextCursor!,
+          limit,
+        };
+        const response2 = await catalog.paginatedEntities(request2);
+        expect(response2.entities).toMatchObject([
+          entityFrom('AA'),
+          entityFrom('AA'),
+        ]);
+        expect(response2.nextCursor).toBeDefined();
+        expect(response2.prevCursor).toBeDefined();
+        expect(response2.totalItems).toBe(6);
+
+        // third request (forward)
+        const request3: PaginatedEntitiesCursorRequest = {
+          cursor: response2.nextCursor!,
+          limit,
+        };
+        const response3 = await catalog.paginatedEntities(request3);
+        expect(response3.entities).toEqual([
+          entityFrom('CC'),
+          entityFrom('DD'),
+        ]);
+        expect(response3.nextCursor).toBeUndefined();
+        expect(response3.prevCursor).toBeDefined();
+        expect(response3.totalItems).toBe(6);
+
+        // forth request (backward)
+        const request4: PaginatedEntitiesCursorRequest = {
+          cursor: response3.prevCursor!,
+          limit,
+        };
+        const response4 = await catalog.paginatedEntities(request4);
+        expect(response4.entities).toMatchObject([
+          entityFrom('AA'),
+          entityFrom('AA'),
+        ]);
+        expect(response4.nextCursor).toBeDefined();
+        expect(response4.prevCursor).toBeDefined();
+        expect(response4.totalItems).toBe(6);
+
+        // fifth request (backward)
+        const request5: PaginatedEntitiesCursorRequest = {
+          cursor: response4.prevCursor!,
+          limit,
+        };
+        const response5 = await catalog.paginatedEntities(request5);
+        expect(response5.entities).toMatchObject([
+          entityFrom('AA'),
+          entityFrom('AA'),
+        ]);
+        expect(response5.nextCursor).toBeDefined();
+        expect(response5.prevCursor).toBeUndefined();
+        expect(response5.totalItems).toBe(6);
+      },
+    );
+
+    it.each(databases.eachSupportedId())(
+      'should paginate results without sort fields, %p',
+      async databaseId => {
+        await createDatabase(databaseId);
+
+        function entityFrom(name: string, namespace?: string) {
+          return {
+            apiVersion: 'a',
+            kind: 'k',
+            metadata: { name, ...(!!namespace && { namespace }) },
+            spec: { should_include_this: 'yes' },
+          };
+        }
+
+        await Promise.all([
+          addEntityToSearch(entityFrom('AA'), 'id1'),
+          addEntityToSearch(entityFrom('CC'), 'id2'),
+          addEntityToSearch(entityFrom('AA', 'namespace2'), 'id4'),
+          addEntityToSearch(entityFrom('AA', 'namespace3'), 'id5'),
+          addEntityToSearch(entityFrom('AA', 'namespace4'), 'id6'),
+          addEntityToSearch(entityFrom('DD'), 'id3'),
+        ]);
+
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
+
+        const limit = 2;
+
+        // initial request
+        const request1: PaginatedEntitiesInitialRequest = {
+          limit,
+        };
+        const response1 = await catalog.paginatedEntities(request1);
+        expect(response1.entities).toMatchObject([
+          entityFrom('AA'),
+          entityFrom('CC'),
+        ]);
+        expect(response1.nextCursor).toBeDefined();
+        expect(response1.prevCursor).toBeUndefined();
+        expect(response1.totalItems).toBe(6);
+
+        // second request (forward)
+        const request2: PaginatedEntitiesCursorRequest = {
+          cursor: response1.nextCursor!,
+          limit,
+        };
+        const response2 = await catalog.paginatedEntities(request2);
+        expect(response2.entities).toMatchObject([
+          entityFrom('DD'),
+          entityFrom('AA', 'namespace2'),
+        ]);
+        expect(response2.nextCursor).toBeDefined();
+        expect(response2.prevCursor).toBeDefined();
+        expect(response2.totalItems).toBe(6);
+
+        // third request (forward)
+        const request3: PaginatedEntitiesCursorRequest = {
+          cursor: response2.nextCursor!,
+          limit,
+        };
+        const response3 = await catalog.paginatedEntities(request3);
+        expect(response3.entities).toEqual([
+          entityFrom('AA', 'namespace3'),
+          entityFrom('AA', 'namespace4'),
+        ]);
+        expect(response3.nextCursor).toBeUndefined();
+        expect(response3.prevCursor).toBeDefined();
+        expect(response3.totalItems).toBe(6);
+
+        // forth request (backward)
+        const request4: PaginatedEntitiesCursorRequest = {
+          cursor: response3.prevCursor!,
+          limit,
+        };
+        const response4 = await catalog.paginatedEntities(request4);
+        expect(response4.entities).toMatchObject([
+          entityFrom('DD'),
+          entityFrom('AA', 'namespace2'),
+        ]);
+        expect(response4.nextCursor).toBeDefined();
+        expect(response4.prevCursor).toBeDefined();
+        expect(response4.totalItems).toBe(6);
+
+        // fifth request (backward)
+        const request5: PaginatedEntitiesCursorRequest = {
+          cursor: response4.prevCursor!,
+          limit,
+        };
+        const response5 = await catalog.paginatedEntities(request5);
+        expect(response5.entities).toMatchObject([
+          entityFrom('AA'),
+          entityFrom('CC'),
+        ]);
+        expect(response5.nextCursor).toBeDefined();
+        expect(response5.prevCursor).toBeUndefined();
+        expect(response5.totalItems).toBe(6);
+      },
+    );
   });
 
   describe('removeEntityByUid', () => {
     it.each(databases.eachSupportedId())(
       'also clears parent hashes',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
         const grandparent: Entity = {
           apiVersion: 'a',
@@ -965,17 +1205,20 @@ describe('DefaultEntitiesCatalog', () => {
           spec: {},
         };
 
-        await addEntity(knex, grandparent, [{ source: 's' }]);
-        await addEntity(knex, parent1, [{ entity: grandparent }]);
-        await addEntity(knex, parent2, [{ entity: grandparent }]);
-        const uid = await addEntity(knex, root, [
+        await addEntity(grandparent, [{ source: 's' }]);
+        await addEntity(parent1, [{ entity: grandparent }]);
+        await addEntity(parent2, [{ entity: grandparent }]);
+        const uid = await addEntity(root, [
           { entity: parent1 },
           { entity: parent2 },
         ]);
-        await addEntity(knex, unrelated, []);
+        await addEntity(unrelated, []);
         await knex('refresh_state').update({ result_hash: 'not-changed' });
 
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
         await catalog.removeEntityByUid(uid);
 
         await expect(
@@ -997,27 +1240,30 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'can filter and collect properly',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
-        await addEntityToSearch(knex, {
+        await addEntityToSearch({
           apiVersion: 'a',
           kind: 'k',
           metadata: { name: 'one' },
           spec: {},
         });
-        await addEntityToSearch(knex, {
+        await addEntityToSearch({
           apiVersion: 'a',
           kind: 'k',
           metadata: { name: 'two' },
           spec: {},
         });
-        await addEntityToSearch(knex, {
+        await addEntityToSearch({
           apiVersion: 'a',
           kind: 'k2',
           metadata: { name: 'two' },
           spec: {},
         });
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         await expect(catalog.facets({ facets: ['kind'] })).resolves.toEqual({
           facets: {
@@ -1033,9 +1279,9 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'can match on annotations and labels with dots in them',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
-        await addEntityToSearch(knex, {
+        await addEntityToSearch({
           apiVersion: 'a',
           kind: 'k',
           metadata: {
@@ -1045,7 +1291,7 @@ describe('DefaultEntitiesCatalog', () => {
           },
           spec: {},
         });
-        await addEntityToSearch(knex, {
+        await addEntityToSearch({
           apiVersion: 'a',
           kind: 'k',
           metadata: {
@@ -1055,7 +1301,10 @@ describe('DefaultEntitiesCatalog', () => {
           },
           spec: {},
         });
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         await expect(
           catalog.facets({
@@ -1079,9 +1328,9 @@ describe('DefaultEntitiesCatalog', () => {
     it.each(databases.eachSupportedId())(
       'can match on strings in arrays',
       async databaseId => {
-        const { knex } = await createDatabase(databaseId);
+        await createDatabase(databaseId);
 
-        await addEntityToSearch(knex, {
+        await addEntityToSearch({
           apiVersion: 'a',
           kind: 'k',
           metadata: {
@@ -1090,7 +1339,7 @@ describe('DefaultEntitiesCatalog', () => {
           },
           spec: {},
         });
-        await addEntityToSearch(knex, {
+        await addEntityToSearch({
           apiVersion: 'a',
           kind: 'k',
           metadata: {
@@ -1099,7 +1348,10 @@ describe('DefaultEntitiesCatalog', () => {
           },
           spec: {},
         });
-        const catalog = new DefaultEntitiesCatalog(knex);
+        const catalog = new DefaultEntitiesCatalog({
+          database: knex,
+          logger: getVoidLogger(),
+        });
 
         await expect(
           catalog.facets({
